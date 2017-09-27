@@ -22,7 +22,7 @@ class DatasetManager( object ):
                                              "MetaQuery": "VARCHAR(512)",
                                              "DirID": "INT NOT NULL DEFAULT 0",
                                              "TotalSize": "BIGINT UNSIGNED NOT NULL",
-                                             "NumberOfFiles": "INT NOT NULL", 
+                                             "NumberOfFiles": "INT NOT NULL",
                                              "UID": "SMALLINT UNSIGNED NOT NULL",
                                              "GID": "TINYINT UNSIGNED NOT NULL",
                                              "Status": "SMALLINT UNSIGNED NOT NULL",
@@ -36,16 +36,10 @@ class DatasetManager( object ):
                                 }
   _tables["FC_MetaDatasetFiles"] = { "Fields": {
                                                 "DatasetID": "INT NOT NULL",
-                                                "FileID": "INT NOT NULL",      
+                                                "FileID": "INT NOT NULL",
                                                },
                                      "UniqueIndexes": {"DatasetID_FileID":["DatasetID","FileID"]}
                                    }
-  _tables["FC_DatasetAnnotations"] = { "Fields": {
-                                                  "DatasetID": "INT NOT NULL",
-                                                  "Annotation": "VARCHAR(512)"
-                                                 },
-                                       "PrimaryKey": "DatasetID",
-                                     }
 
   def __init__( self, database = None ):
     self.db = None
@@ -54,8 +48,8 @@ class DatasetManager( object ):
 
   def setDatabase( self, database ):
     self.db = database
-    
-    # Have to check the existing table should be dropped when 
+
+    # Have to check the existing table should be dropped when
     # existing tables will not be recreated
     result = self.db._query("SHOW TABLES")
     if not result['OK']:
@@ -70,7 +64,7 @@ class DatasetManager( object ):
     if not result['OK']:
       gLogger.error( "Failed to create tables", str( self._tables.keys() ) )
     elif result['Value']:
-      gLogger.info( "Tables created: %s" % ','.join( result['Value'] ) )  
+      gLogger.info( "Tables created: %s" % ','.join( result['Value'] ) )
     return result
 
   def _getConnection( self, connection=False ):
@@ -128,7 +122,7 @@ class DatasetManager( object ):
       return result
     if result['Value']['Exists']:
       dirID = result['Value']['DirID']
-    else:  
+    else:
       result = self.db.dtree.makeDirectories( dsDir )
       if not result['OK']:
         return result
@@ -156,7 +150,132 @@ class DatasetManager( object ):
         return result
     datasetID = result['lastRowId']
     return S_OK( datasetID )
-  
+
+  def checkFieldExistance(self, fname):
+    result = self.db._query( "SELECT EXISTS(
+                                  SELECT 1 FROM FC_DatasetFields
+                                  WHERE FieldName=%s)"%fname )
+    if not result['OK']:
+      return result
+    if result['Value'][0]:
+      return S_OK(True)
+
+  def renameField(self, oldname, newname):
+    if not checkFieldExistance(oldname)['Value']:
+      return S_ERROR( 'The field %s is not defined' %  fname)
+
+    # Not sure if update will work here, maybe need to just do a cursor.execute()
+    result = self.db._update("RENAME TABLE FC_DatasetFields_%s TO FC_DatasetFields_%s" % (oldname,newname))
+    result = self.db._update("UPDATE FC_DatasetFields SET FieldName=%s WHERE FieldName=%s" % (newname, oldname))
+
+    FieldID = result['lastRowId']
+
+    return S_OK( "Modified field: %d" % FieldID )
+
+  def _addField(self, fname, ftype, newTableReq, insReq, credDict):
+    if not checkFieldExistance(oldname)['Value']:
+      return S_ERROR( 'The field %s is already defined' %  fname)
+
+    result = self.db._query( newTableReq )
+    if not result['OK']:
+      return result
+
+    result = self.db._insert( *insReq )
+    if not result['OK']:
+      return result
+
+    FieldID = result['lastRowId']
+
+    return S_OK( "Added new metadata: %d" % FieldID )
+
+  def addFieldInt(self, fname, unique, credDict):
+    if unique:
+      req = ("CREATE TABLE FC_DatasetField_%s ("
+                "DATASET_ID INTEGER NOT NULL,"
+                "Value INT,"
+                "UNIQUE (DATASET_ID),"
+                "INDEX (Value), "
+                "INDEX (DatasetID) )" ) % (fname, length)
+    else:
+      req = ("CREATE TABLE FC_DatasetField_%s ("
+                "DATASET_ID INTEGER NOT NULL,"
+                "Value INT,"
+                "INDEX (Value), "
+                "INDEX (DatasetID) )" ) % (fname, length)
+
+    insreq = ('FC_DatasetFields', ['FieldName', 'FieldType', 'Unique'], [fname, ftype, unique])
+
+    return _createField(self, fname, 'int', req, insreq, credDict)
+
+  def addFieldFloat(self, fname, unique, credDict):
+    if unique:
+      req = ("CREATE TABLE FC_DatasetField_%s ("
+                "DATASET_ID INTEGER NOT NULL,"
+                "Value DOUBLE,"
+                "UNIQUE (DATASET_ID),"
+                "INDEX (Value), "
+                "INDEX (DatasetID) )" ) % (fname, length)
+    else:
+      req = ("CREATE TABLE FC_DatasetField_%s ("
+                "DATASET_ID INTEGER NOT NULL,"
+                "Value DOUBLE,"
+                "INDEX (Value), "
+                "INDEX (DatasetID) )" ) % (fname, length)
+
+    insreq = ('FC_DatasetFields', ['FieldName', 'FieldType', 'Unique'], [fname, ftype, unique])
+
+    return _createField(self, fname, 'float', req, credDict)
+
+  def addFieldString(self, fname, unique, length, credDict):
+    if unique:
+      req = ("CREATE TABLE FC_DatasetField_%s ("
+                "DATASET_ID INTEGER NOT NULL,"
+                "Value VARCHAR(%s),"
+                "UNIQUE (DATASET_ID),"
+                "INDEX (Value), "
+                "INDEX (DatasetID) )" ) % (fname, length)
+    else:
+      req = ("CREATE TABLE FC_DatasetField_%s ( "
+                "DATASET_ID INTEGER NOT NULL, "
+                "Value VARCHAR(%s), "
+                "INDEX (Value), "
+                "INDEX (DatasetID) )" ) % (fname, length)
+
+    insreq = ('FC_DatasetFields', ['FieldName', 'FieldType', 'Unique', 'Length'], [fname, ftype, unique, length])
+
+    return _createField(self, fname, 'string', req, credDict)
+
+  def addFieldText(self, fname, unique, credDict):
+    # Can efficently store more characters with text than string, but cant index
+    if unique:
+      req = ("CREATE TABLE FC_DatasetField_%s ("
+                "DatasetID INTEGER NOT NULL,"
+                "Value TEXT,"
+                "UNIQUE (DATASET_ID),"
+                "INDEX (DatasetID) )") % fname
+    else:
+      req = ("CREATE TABLE FC_DatasetField_%s ("
+                "DatasetID INTEGER NOT NULL,"
+                "Value TEXT,"
+                "INDEX (DatasetID) )") % fname
+
+    insreq = ('FC_DatasetFields', ['FieldName', 'FieldType', 'Unique'], [fname, ftype, unique])
+
+    return _createField(self, fname, 'text', req, credDict)
+
+  def setFields( self, datasetName, fieldDict, credDict):
+
+    if not checkFieldExistance(datasetName)['Value']:
+      return S_ERROR( 'The field %s is not defined' %  fname)
+
+    tablelist = ['FC_DatasetField_%s' % fname for fname in fieldDict.keys()]
+
+    setlist = ['FC_DatasetField_%s.Value=%s' %( fname,fval for fname,fval in fieldDict.items()]
+
+
+
+    return S_OK()
+
   def _getDatasetDirectories( self, datasets ):
     dirDict = {}
     for path in datasets:
@@ -165,31 +284,31 @@ class DatasetManager( object ):
       dirDict.setdefault( dsDir, [] )
       dirDict[dsDir].append( dsFile )
     return dirDict
-  
+
   def _findDatasets( self, datasets, connection=False ):
-     
-    connection = self._getConnection( connection ) 
+
+    connection = self._getConnection( connection )
     fullNames = [ name for name in datasets if name.startswith('/') ]
     shortNames = [ name for name in datasets if not name.startswith('/') ]
-    
+
     resultDict = { "Successful": {}, "Failed": {} }
     if fullNames:
       result = self.__findFullPathDatasets( fullNames, connection )
       if not result['OK']:
         return result
       resultDict = result['Value']
-      
+
     if shortNames:
-      result = self.__findNoPathDatasets( shortNames, connection ) 
+      result = self.__findNoPathDatasets( shortNames, connection )
       if not result['OK']:
         return result
       resultDict['Successful'].update( result['Value']['Successful'] )
       resultDict['Failed'].update( result['Value']['Failed'] )
-  
+
     return S_OK( resultDict )
-  
+
   def __findFullPathDatasets( self, datasets, connection ):
-        
+
     dirDict = self._getDatasetDirectories( datasets )
     failed = {}
     successful = {}
@@ -206,7 +325,7 @@ class DatasetManager( object ):
           dname = dname.replace('//','/')
           failed[dname] = 'No such dataset or directory'
       else:
-        directoryPaths[directoryIDs[dirPath]] = dirPath    
+        directoryPaths[directoryIDs[dirPath]] = dirPath
 
     wheres = []
     for dirPath in directoryIDs:
@@ -221,14 +340,14 @@ class DatasetManager( object ):
     for dsName, dirID, dsID in result['Value']:
       dname = '%s/%s' % ( directoryPaths[dirID], dsName )
       dname = dname.replace('//','/')
-      successful[dname] = { "DirID": dirID, "DatasetID": dsID } 
-  
+      successful[dname] = { "DirID": dirID, "DatasetID": dsID }
+
     for dataset in datasets:
       if not dataset in successful:
         failed[dataset] = "No such dataset"
 
     return S_OK({"Successful":successful,"Failed":failed})
-  
+
   def __findNoPathDatasets( self, nodirDatasets, connection ):
 
     failed = {}
@@ -242,23 +361,23 @@ class DatasetManager( object ):
     for dsCount, dsName, dsID in result['Value']:
       if dsCount > 1:
         failed[dsName] = "Ambiguous dataset name"
-      else:  
+      else:
         dsIDs[dsName] = str( dsID )
-        
+
     if dsIDs:
-      req = "SELECT DatasetName,DatasetID,DirID FROM FC_MetaDatasets WHERE DatasetID in (%s)" % ','.join( dsIDs.values() ) 
+      req = "SELECT DatasetName,DatasetID,DirID FROM FC_MetaDatasets WHERE DatasetID in (%s)" % ','.join( dsIDs.values() )
       result = self.db._query( req, connection )
       if not result['OK']:
-        return result 
+        return result
       for dsName, dsID, dirID in result['Value']:
-        successful[dsName] = { "DirID": dirID, "DatasetID": dsID }   
-       
+        successful[dsName] = { "DirID": dirID, "DatasetID": dsID }
+
     for name in nodirDatasets:
       if name not in failed and name not in successful:
-        failed[name] = "Dataset not found"     
-        
-    return S_OK({"Successful":successful,"Failed":failed})    
-  
+        failed[name] = "Dataset not found"
+
+    return S_OK({"Successful":successful,"Failed":failed})
+
   def addDatasetAnnotation( self, datasets, credDict ):
     """ Add annotation to the given dataset
     """
@@ -276,10 +395,10 @@ class DatasetManager( object ):
         if not result['OK']:
           failed[dataset] = "Failed to add annotation"
         else:
-          successful[dataset] = True  
-      
-    return S_OK( {'Successful':successful, 'Failed':failed} )  
-  
+          successful[dataset] = True
+
+    return S_OK( {'Successful':successful, 'Failed':failed} )
+
   def getDatasetAnnotation( self, datasets, credDict = {} ):
     """ Get annotations for the given datasets
     """
@@ -293,25 +412,25 @@ class DatasetManager( object ):
       for dataset in result['Value']['Successful']:
         dsDict[result['Value']['Successful'][dataset]['DatasetID']] = dataset
       for dataset in result['Value']['Failed']:
-        failed[dataset] = "Dataset not found"  
-      
+        failed[dataset] = "Dataset not found"
+
       idString = ','.join( [ str(x) for x in dsDict.keys() ] )
       req = "SELECT DatasetID, Annotation FROM FC_DatasetAnnotations WHERE DatasetID in (%s)" % idString
     else:
-      req = "SELECT DatasetID, Annotation FROM FC_DatasetAnnotations"  
+      req = "SELECT DatasetID, Annotation FROM FC_DatasetAnnotations"
     result = self.db._query( req )
     if not result['OK']:
       return result
-    
+
     for dsID, annotation in result['Value']:
       successful[dsDict[dsID]] = annotation
-      
-    if datasets:  
+
+    if datasets:
       for dataset in datasets:
         if dataset not in successful and dataset not in failed:
-          successful[dataset] = '-'  
-      
-    return S_OK( {'Successful':successful, 'Failed':failed} )  
+          successful[dataset] = '-'
+
+    return S_OK( {'Successful':successful, 'Failed':failed} )
 
   def __getMetaQueryParameters( self, metaQuery, credDict ):
     """ Get parameters ( hash, total size, number of files ) for the given metaquery
@@ -558,24 +677,24 @@ class DatasetManager( object ):
           uid = row[i]
           if uid in userDict:
             owner = userDict[uid]
-          else:  
+          else:
             owner = 'unknown'
             result = self.db.ugManager.getUserName( uid )
             if result['OK']:
               owner = result['Value']
-            userDict[uid] = owner  
+            userDict[uid] = owner
           dsDict[dsName]['Owner'] = owner
         if parameterList[i] == 'GID':
           gid = row[i]
           if gid in groupDict:
             group = groupDict[gid]
-          else:  
+          else:
             group = 'unknown'
             result = self.db.ugManager.getGroupName( gid )
             if result['OK']:
               group = result['Value']
-            groupDict[gid] = group  
-          dsDict[dsName]['OwnerGroup'] = group   
+            groupDict[gid] = group
+          dsDict[dsName]['OwnerGroup'] = group
       datasets[dsName]['Metadata'] = dsDict
 
     if verbose and datasets:
@@ -647,9 +766,9 @@ class DatasetManager( object ):
       return result
     if not result['Value']['Successful']:
       return S_ERROR( result['Value']['Failed'][datasetName] )
-    dirID = result['Value']['Successful'][datasetName]['DirID']     
+    dirID = result['Value']['Successful'][datasetName]['DirID']
     dsName = os.path.basename( datasetName )
-    
+
     parameterList = ['DatasetID','MetaQuery','DirID','TotalSize','NumberOfFiles',
                      'UID','GID','Status','CreationDate','ModificationDate','DatasetHash','Mode']
     parameterString = ','.join( parameterList )
