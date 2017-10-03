@@ -9,6 +9,8 @@ __RCSID__ = "$Id$"
 
 import hashlib as md5
 import os
+from datetime import datetime
+from collections import defaultdict
 
 from DIRAC import S_OK, S_ERROR, gLogger
 from DIRAC.Core.Utilities.List import stringListToString
@@ -40,6 +42,14 @@ class DatasetManager( object ):
                                                },
                                      "UniqueIndexes": {"DatasetID_FileID":["DatasetID","FileID"]}
                                    }
+
+  _tables["FC_MetaDatasetFields"] = { "Fields": {
+	                                            "FieldID": "VARCHAR(128) NOT NULL",
+	                                            "FieldType": "VARCHAR(4) NOT NULL",
+                                              "Length": "INT" # only specified for varchar fields
+	                                           },
+	                                 "UniqueIndexes": {"":["FieldID"]}
+	                               }
 
   def __init__( self, database = None ):
     self.db = None
@@ -152,21 +162,22 @@ class DatasetManager( object ):
     return S_OK( datasetID )
 
   def checkFieldExistance(self, fname):
-    result = self.db._query( "SELECT EXISTS(
-                                  SELECT 1 FROM FC_DatasetFields
-                                  WHERE FieldName=%s)"%fname )
+    result = self.db._query( "SELECT EXISTS( SELECT 1 FROM FC_MetaDatasetFields WHERE FieldName=%s)" %fname )
+    
     if not result['OK']:
       return result
-    if result['Value'][0]:
+    if result['Value'][0][0] == 'true':
       return S_OK(True)
+    else:
+      return S_OK(False)
 
   def renameField(self, oldname, newname):
     if not checkFieldExistance(oldname)['Value']:
       return S_ERROR( 'The field %s is not defined' %  fname)
 
     # Not sure if update will work here, maybe need to just do a cursor.execute()
-    result = self.db._update("RENAME TABLE FC_DatasetFields_%s TO FC_DatasetFields_%s" % (oldname,newname))
-    result = self.db._update("UPDATE FC_DatasetFields SET FieldName=%s WHERE FieldName=%s" % (newname, oldname))
+    result = self.db._update("RENAME TABLE FC_MetaDatasetFields_%s TO FC_MetaDatasetFields_%s" % (oldname,newname))
+    result = self.db._update("UPDATE FC_MetaDatasetFields SET FieldName=%s WHERE FieldName=%s" % (newname, oldname))
 
     FieldID = result['lastRowId']
 
@@ -176,6 +187,7 @@ class DatasetManager( object ):
     if not checkFieldExistance(oldname)['Value']:
       return S_ERROR( 'The field %s is already defined' %  fname)
 
+    # Should probably be using transations here instead of two separate SQL statements
     result = self.db._query( newTableReq )
     if not result['OK']:
       return result
@@ -188,93 +200,191 @@ class DatasetManager( object ):
 
     return S_OK( "Added new metadata: %d" % FieldID )
 
-  def addFieldInt(self, fname, unique, credDict):
-    if unique:
-      req = ("CREATE TABLE FC_DatasetField_%s ("
-                "DATASET_ID INTEGER NOT NULL,"
-                "Value INT,"
-                "UNIQUE (DATASET_ID),"
-                "INDEX (Value), "
-                "INDEX (DatasetID) )" ) % (fname, length)
-    else:
-      req = ("CREATE TABLE FC_DatasetField_%s ("
-                "DATASET_ID INTEGER NOT NULL,"
-                "Value INT,"
-                "INDEX (Value), "
-                "INDEX (DatasetID) )" ) % (fname, length)
+  def addFieldInt(self, fname, credDict):
+    """
+    The Active column is a replacement for row deletion. In cases where information
+    should not be visible to the frontend, rather than deleting a row it can be
+    deactivated by setting Active=0. This is so possibly important notes or values
+    deleted or modified cannot be lost.
+    """
+    req = ("CREATE TABLE FC_DatasetField_%s ("
+              "DatasetID INTEGER NOT NULL,"
+              "Value INT,"
+              "Active BOOLEAN NOT NULL DEFAULT 1, "
+              "DateAdded DATETIME NOT NULL"
+              "INDEX (Value), "
+              "INDEX (DatasetID) )" ) % (fname, length)
 
-    insreq = ('FC_DatasetFields', ['FieldName', 'FieldType', 'Unique'], [fname, ftype, unique])
+    insreq = ('FC_MetaDatasetFields', ['FieldName', 'FieldType'], [fname, ftype])
 
-    return _createField(self, fname, 'int', req, insreq, credDict)
+    return _addField(self, fname, 'int', req, insreq, credDict)
 
-  def addFieldFloat(self, fname, unique, credDict):
-    if unique:
-      req = ("CREATE TABLE FC_DatasetField_%s ("
-                "DATASET_ID INTEGER NOT NULL,"
-                "Value DOUBLE,"
-                "UNIQUE (DATASET_ID),"
-                "INDEX (Value), "
-                "INDEX (DatasetID) )" ) % (fname, length)
-    else:
-      req = ("CREATE TABLE FC_DatasetField_%s ("
-                "DATASET_ID INTEGER NOT NULL,"
-                "Value DOUBLE,"
-                "INDEX (Value), "
-                "INDEX (DatasetID) )" ) % (fname, length)
+  def addFieldFloat(self, fname, credDict):
+    req = ("CREATE TABLE FC_DatasetField_%s ("
+              "DatasetID INTEGER NOT NULL,"
+              "Value DOUBLE,"
+              "Active BOOLEAN NOT NULL DEFAULT 1, "
+              "DateAdded DATETIME NOT NULL"
+              "INDEX (Value), "
+              "INDEX (DatasetID) )" ) % (fname, length)
 
-    insreq = ('FC_DatasetFields', ['FieldName', 'FieldType', 'Unique'], [fname, ftype, unique])
+    insreq = ('FC_MetaDatasetFields', ['FieldName', 'FieldType'], [fname, ftype])
 
-    return _createField(self, fname, 'float', req, credDict)
+    return _addField(self, fname, 'float', req, credDict)
+
+  def addFieldDate(self, fname, credDict):
+    req = ("CREATE TABLE FC_DatasetField_%s ("
+              "DatasetID INTEGER NOT NULL,"
+              "Value DATETIME,"
+              "Active BOOLEAN NOT NULL DEFAULT 1, "
+              "DateAdded DATETIME NOT NULL"
+              "INDEX (Value), "
+              "INDEX (DatasetID) )" ) % (fname, length)
+
+    insreq = ('FC_MetaDatasetFields', ['FieldName', 'FieldType'], [fname, ftype])
+
+    return _addField(self, fname, 'float', req, credDict)
 
   def addFieldString(self, fname, unique, length, credDict):
-    if unique:
-      req = ("CREATE TABLE FC_DatasetField_%s ("
-                "DATASET_ID INTEGER NOT NULL,"
-                "Value VARCHAR(%s),"
-                "UNIQUE (DATASET_ID),"
-                "INDEX (Value), "
-                "INDEX (DatasetID) )" ) % (fname, length)
-    else:
-      req = ("CREATE TABLE FC_DatasetField_%s ( "
-                "DATASET_ID INTEGER NOT NULL, "
-                "Value VARCHAR(%s), "
-                "INDEX (Value), "
-                "INDEX (DatasetID) )" ) % (fname, length)
+    req = ("CREATE TABLE FC_DatasetField_%s ( "
+              "DatasetID INTEGER NOT NULL, "
+              "Value VARCHAR(%s), "
+              "Active BOOLEAN NOT NULL DEFAULT 1, "
+              "DateAdded DATETIME NOT NULL"
+              "INDEX (Value), "
+              "INDEX (DatasetID) )" ) % (fname, length)
 
-    insreq = ('FC_DatasetFields', ['FieldName', 'FieldType', 'Unique', 'Length'], [fname, ftype, unique, length])
+    insreq = ('FC_MetaDatasetFields', ['FieldName', 'FieldType', 'Length'], [fname, ftype, length])
 
-    return _createField(self, fname, 'string', req, credDict)
+    return _addField(self, fname, 'string', req, credDict)
 
-  def addFieldText(self, fname, unique, credDict):
+  def addFieldText(self, fname, credDict):
     # Can efficently store more characters with text than string, but cant index
-    if unique:
-      req = ("CREATE TABLE FC_DatasetField_%s ("
-                "DatasetID INTEGER NOT NULL,"
-                "Value TEXT,"
-                "UNIQUE (DATASET_ID),"
-                "INDEX (DatasetID) )") % fname
-    else:
-      req = ("CREATE TABLE FC_DatasetField_%s ("
-                "DatasetID INTEGER NOT NULL,"
-                "Value TEXT,"
-                "INDEX (DatasetID) )") % fname
+    req = ("CREATE TABLE FC_DatasetField_%s ("
+              "DatasetID INTEGER NOT NULL, "
+              "Value TEXT, "
+              "Active BOOLEAN NOT NULL DEFAULT 1, "
+              "DateAdded DATETIME NOT NULL"
+              "INDEX (DatasetID) )") % fname
 
-    insreq = ('FC_DatasetFields', ['FieldName', 'FieldType', 'Unique'], [fname, ftype, unique])
+    insreq = ('FC_MetaDatasetFields', ['FieldName', 'FieldType'], [fname, ftype])
 
-    return _createField(self, fname, 'text', req, credDict)
+    return _addField(self, fname, 'text', req, credDict)
 
-  def setFields( self, datasetName, fieldDict, credDict):
+  def modifyFields( self, datasetName, addDict, removeDict, credDict):
+    """
+    datasetName -- String containing the dataset's name
+    addDict -- Dictionary of field names and values to be added to the dataset eg
+    			{fieldName:[value1, value2, value3]}
+    removeDict -- Dictionary of field names and values to be removed from the dataset
+    """
+    fields = tuple(set(removeDict.keys() + addDict.keys()))
 
-    if not checkFieldExistance(datasetName)['Value']:
-      return S_ERROR( 'The field %s is not defined' %  fname)
+    req = 'SELECT FieldName FROM FC_MetaDatasetFields WHERE FieldName IN %s' % str(fields)
+    result = self.db._query( req )
+    if not result['OK']:
+      return result
 
-    tablelist = ['FC_DatasetField_%s' % fname for fname in fieldDict.keys()]
+    missingFields = set(fieldDict.keys())-set([x[0] for x in result['Value']])
 
-    setlist = ['FC_DatasetField_%s.Value=%s' %( fname,fval for fname,fval in fieldDict.items()]
+    if missingFields:
+      return S_ERROR( 'Field names %s unrecognised' % str(tuple(missingFields)) )
 
+    # TODO: Check if the type of each format is correct
 
+    def generateStatements(template, dic):
+      # insert data from dictionaries into templates making the SQL statements
+      statements = []
+
+      for fname, fvals in dic.items():
+        for fval in fname:
+          if isinstance(fval, str):
+            fval = "('%s')" % str(fval).replace("'", r"\'") # escape single quotes and put inside (' ')
+            statements.append( template % (fname, fval ))
+          elif isinstance(fval, datetime):
+            fval = "('%s')" % fval.strftime('%Y-%m-%d %H:%M:%S') # put into SQL datetime format
+            statements.append( template % (fname, fval )
+          else:
+            statements.append( template % (fname, str(fval)) ))
+
+      return statements
+
+    updateTemplate = 'UPDATE FC_MetaDatasetFields_%s SET Active=0 WHERE DatasetID=' + datasetName + ' AND Value=%s;'
+    insertTemplate = 'INSERT INTO FC_MetaDatasetFields_%s (DateAdded, DatasetID, Value) VALUES (NOW(), ' + datasetName + ',  %s);'
+
+    updateStatements = generateStatements(updateTemplate, removeDict)
+    insertStatements = generateStatements(insertTemplate, removeDict)
+
+    # Add and remove data from dataset in a single transation
+    req = "BEGIN;\n"+"\n".join(updateStatements+insertStatements)+"\nCOMMIT;"
+    result = self.db._update(req)
+    if not result['OK']:
+      return result
 
     return S_OK()
+
+  def getFieldNames(self, credDict):
+
+  	req = "Select FieldID from FC_MetaDatasetFields"
+  	result = self.db._query( req )
+    
+    if not result['OK']:
+      return result
+    if result['Value'][0]:
+      return S_OK(True)
+
+  def getFieldNamesTypes(self, credDict):
+
+  	req = "Select FieldID, FieldType from FC_MetaDatasetFields"
+  	result = self.db._query( req )
+    
+    if not result['OK']:
+      return result
+
+    fieldIDValueDict = {}
+    for fid, fval in result['Value']:
+      fieldIDValueDict[fid] = fval
+    
+    return S_OK(fieldIDValueDict)
+
+  def getAllFieldValues(self, datasetName, includeDeactivated=False, credDict):
+    """
+    datasetName -- nome of dataset to get fields for
+    includeDeactivated -- Includes field values which have been deactivated
+    returns a dictionary:
+    {field1Name: [(field1Value1, field1DateModified1), (field1Value2, field1DateModified2)],
+      field2Name: [(field2Value1, field2DateModified1)],
+      etc}
+    """
+    req = "SELECT FieldID, FieldType FROM FC_MetaDatasetFields"
+    result1 = self.db._query( req )
+    if not result1['OK']:
+      return result1
+
+    fieldDict = defaultdict(list)
+
+    for fname, fval in result1['Value']:
+      if includeDeactivated:
+        req = "SELECT Value FROM FC_MetaDatasetField_%s WHERE DatasetID=%s" % (fname, datasetName)
+      else:
+        req = "SELECT Value FROM FC_MetaDatasetField_%s WHERE DatasetID=%s and Active=1" % (fname, datasetName)
+      result2 = self.db._query( req )
+      if not result2['OK']:
+        return result2
+
+      for val, date in result2['Value']:
+        # Convert to correct type
+        if fval == 'int':
+          val = int(val)
+        if fval == 'float':
+          val = float(val)
+        if val == 'date':
+          val = datetime.strptime(val, '%Y-%m-%d %H:%M:%S')
+        # otherwise val is a string type
+
+        fieldDict[fname].append((val,date))
+
+    return S_OK(fieldDict)
 
   def _getDatasetDirectories( self, datasets ):
     dirDict = {}
